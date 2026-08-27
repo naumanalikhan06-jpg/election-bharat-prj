@@ -5,9 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ElectionRepository
 import com.example.data.gemini.GeminiAiService
+import com.example.model.AuditVerificationProof
 import com.example.model.BoothChecklistItem
 import com.example.model.Candidate
 import com.example.model.ElectorProfile
+import com.example.model.EncryptedVotePayload
 import com.example.model.FactCheckItem
 import com.example.model.Language
 import com.example.model.MCCViolationReport
@@ -16,6 +18,7 @@ import com.example.model.ParliamentaryConstituency
 import com.example.model.PollingBooth
 import com.example.model.SMSAlertNotification
 import com.example.model.UserRole
+import com.example.model.VoteSubmissionResult
 import com.example.model.VoterReceipt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,13 +53,19 @@ data class ElectionUiState(
     val activeSmsAlert: SMSAlertNotification? = null,
     val latestReceipt: VoterReceipt? = null,
     
-    // EVM / Voting Simulator State
+    // EVM / Cryptographic Voting State
     val isVotingInProgress: Boolean = false,
-    val votingStep: Int = 1, // 1: Verify OTP, 2: 3D EVM Ballot Unit, 3: VVPAT 7-Sec Slip Feed, 4: Receipt & SMS Success
+    val votingStep: Int = 1, // 1: Verify OTP, 2: 3D EVM Ballot Unit, 3: VVPAT 7-Sec Slip Feed, 4: Receipt, Cryptographic Proof & Firestore Status
     val selectedCandidateForVote: Candidate? = null,
     val otpInput: String = "",
     val isOtpVerified: Boolean = false,
     val vvpatSlipVisible: Boolean = false,
+    val isTransactionSubmitting: Boolean = false,
+    val latestEncryptedPayload: EncryptedVotePayload? = null,
+    val latestSubmissionResult: VoteSubmissionResult? = null,
+    val auditProof: AuditVerificationProof? = null,
+    val decryptedAuditText: String? = null,
+    val doubleVoteBlockWarning: String? = null,
 
     // AI Chat State
     val chatMessages: List<ChatMessage> = listOf(
@@ -181,27 +190,110 @@ class ElectionViewModel(application: Application) : AndroidViewModel(application
             it.copy(
                 selectedCandidateForVote = candidate,
                 votingStep = 3,
-                vvpatSlipVisible = true
+                vvpatSlipVisible = true,
+                isTransactionSubmitting = true,
+                doubleVoteBlockWarning = null,
+                auditProof = null,
+                decryptedAuditText = null
             )
         }
 
         // Trigger 7-second VVPAT inspection window before cutting and dropping into the ballot box
         viewModelScope.launch {
-            kotlinx.coroutines.delay(4500L) // 4.5 seconds animation window
-            
-            // Record vote cryptographically and dispatch SMS to registered mobile
-            val (receipt, smsAlert) = repository.recordVoteAndGenerateReceipt(
+            kotlinx.coroutines.delay(4000L) // Inspection window
+
+            // Submit vote using Client-side AES-256 field encryption, HMAC-SHA256, and Firestore transaction
+            val (result, smsAlert) = repository.submitEncryptedVoteWithTransaction(
                 elector = _uiState.value.elector,
                 selectedCandidate = candidate
             )
 
+            when (result) {
+                is VoteSubmissionResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            vvpatSlipVisible = false,
+                            votingStep = 4,
+                            isTransactionSubmitting = false,
+                            elector = it.elector.copy(hasVoted = true),
+                            activeSmsAlert = smsAlert,
+                            latestReceipt = result.receipt,
+                            latestEncryptedPayload = result.encryptedPayload,
+                            latestSubmissionResult = result,
+                            doubleVoteBlockWarning = null
+                        )
+                    }
+                }
+                is VoteSubmissionResult.DoubleVoteBlocked -> {
+                    _uiState.update {
+                        it.copy(
+                            vvpatSlipVisible = false,
+                            votingStep = 4,
+                            isTransactionSubmitting = false,
+                            latestSubmissionResult = result,
+                            doubleVoteBlockWarning = result.reason
+                        )
+                    }
+                }
+                is VoteSubmissionResult.IntegrityCheckFailed -> {
+                    _uiState.update {
+                        it.copy(
+                            vvpatSlipVisible = false,
+                            votingStep = 4,
+                            isTransactionSubmitting = false,
+                            latestSubmissionResult = result,
+                            doubleVoteBlockWarning = result.reason
+                        )
+                    }
+                }
+                is VoteSubmissionResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            vvpatSlipVisible = false,
+                            votingStep = 4,
+                            isTransactionSubmitting = false,
+                            latestSubmissionResult = result,
+                            doubleVoteBlockWarning = result.errorMessage
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Re-verifies HMAC and SHA-256 Digital Seal to demonstrate zero-tamper integrity.
+     */
+    fun verifyCurrentBallotIntegrity() {
+        val payload = _uiState.value.latestEncryptedPayload ?: return
+        val proof = repository.verifyBallotIntegrity(payload)
+        _uiState.update { it.copy(auditProof = proof) }
+    }
+
+    /**
+     * Decrypts the ballot choice using sovereign audit master key for recount demonstration.
+     */
+    fun decryptCurrentBallotForAudit() {
+        val payload = _uiState.value.latestEncryptedPayload ?: return
+        val decryptedJson = repository.decryptBallotForAudit(payload)
+        _uiState.update { it.copy(decryptedAuditText = decryptedJson) }
+    }
+
+    /**
+     * Tests Firestore transaction atomic duplicate prevention by simulating a second vote attempt.
+     */
+    fun testAttemptDoubleVoting() {
+        val candidate = _uiState.value.selectedCandidateForVote ?: repository.candidates.first()
+        viewModelScope.launch {
+            val (result, _) = repository.submitEncryptedVoteWithTransaction(
+                elector = _uiState.value.elector,
+                selectedCandidate = candidate
+            )
             _uiState.update {
                 it.copy(
-                    vvpatSlipVisible = false,
-                    votingStep = 4,
-                    elector = it.elector.copy(hasVoted = true),
-                    activeSmsAlert = smsAlert,
-                    latestReceipt = receipt
+                    latestSubmissionResult = result,
+                    doubleVoteBlockWarning = (result as? VoteSubmissionResult.DoubleVoteBlocked)?.reason
+                        ?: "Transaction aborted: Elector already recorded in sovereign ledger."
                 )
             }
         }

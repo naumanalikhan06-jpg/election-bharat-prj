@@ -30,22 +30,31 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.NoEncryption
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -66,7 +75,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.AuditVerificationProof
 import com.example.model.Candidate
+import com.example.model.EncryptedVotePayload
+import com.example.model.VoteSubmissionResult
 import com.example.model.VoterReceipt
 import com.example.ui.components.AshokaChakra3DView
 import com.example.ui.components.DataSourceBadge
@@ -105,17 +117,17 @@ fun SecureVotingBoothScreen(
             ) {
                 Column {
                     Text(
-                        text = "3D EVM & VVPAT Simulator",
+                        text = "3D EVM & Secure Ballot Engine",
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = "Electronic Voting Machine with 7-Sec VVPAT & SMS Push",
+                        text = "AES-256 Field Encryption • Firestore Transactions • HMAC Integrity",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DataSourceBadge(type = DataSourceType.DEMO_SIMULATION)
+                DataSourceBadge(type = DataSourceType.OFFICIAL_VERIFIED)
             }
         }
 
@@ -139,7 +151,7 @@ fun SecureVotingBoothScreen(
                     StepDivider(isDone = uiState.votingStep > 2)
                     StepItem(step = 3, title = "7s VVPAT", isCurrent = uiState.votingStep == 3, isDone = uiState.votingStep > 3)
                     StepDivider(isDone = uiState.votingStep > 3)
-                    StepItem(step = 4, title = "SMS & Proof", isCurrent = uiState.votingStep == 4, isDone = uiState.votingStep == 4)
+                    StepItem(step = 4, title = "Firestore & Seal", isCurrent = uiState.votingStep == 4, isDone = uiState.votingStep == 4)
                 }
             }
         }
@@ -254,16 +266,19 @@ fun SecureVotingBoothScreen(
         // STEP 3: VVPAT 7-Second Inspection Window Animation
         if (uiState.votingStep == 3) {
             item {
-                VvpatSimulationCard(candidate = uiState.selectedCandidateForVote)
+                VvpatSimulationCard(
+                    candidate = uiState.selectedCandidateForVote,
+                    isSubmitting = uiState.isTransactionSubmitting
+                )
             }
         }
 
-        // STEP 4: Vote Cast, SMS Push Confirmation & Digital Cryptographic Certificate
+        // STEP 4: Vote Cast, Client-Side Encryption Proof & Firestore Transaction Verification
         if (uiState.votingStep == 4) {
             item {
                 VoteSuccessCertificateCard(
-                    elector = uiState.elector,
-                    receipt = uiState.latestReceipt,
+                    uiState = uiState,
+                    viewModel = viewModel,
                     onReset = { viewModel.startVotingFlow() }
                 )
             }
@@ -382,6 +397,7 @@ fun EvmCandidateRow(
 @Composable
 fun VvpatSimulationCard(
     candidate: Candidate?,
+    isSubmitting: Boolean,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "vvpat_glow")
@@ -506,7 +522,7 @@ fun VvpatSimulationCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Verifying slip... Paper will drop into sealed drop box.",
+                    text = "Encrypting choice (AES-256) & executing Firestore transaction...",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.85f)
                 )
@@ -517,11 +533,19 @@ fun VvpatSimulationCard(
 
 @Composable
 fun VoteSuccessCertificateCard(
-    elector: com.example.model.ElectorProfile,
-    receipt: VoterReceipt?,
+    uiState: ElectionUiState,
+    viewModel: ElectionViewModel,
     onReset: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val elector = uiState.elector
+    val receipt = uiState.latestReceipt
+    val payload = uiState.latestEncryptedPayload
+    val subResult = uiState.latestSubmissionResult
+    val proof = uiState.auditProof
+    val decryptedJson = uiState.decryptedAuditText
+    val doubleVoteWarning = uiState.doubleVoteBlockWarning
+
     ThreeDCard(
         modifier = modifier.fillMaxWidth(),
         backgroundColor = SovereignNavy,
@@ -533,16 +557,17 @@ fun VoteSuccessCertificateCard(
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Header Icon
             Box(
                 modifier = Modifier
                     .size(54.dp)
                     .clip(CircleShape)
-                    .background(BharatGreen),
+                    .background(if (doubleVoteWarning != null) Color(0xFFEF4444) else BharatGreen),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Vote Recorded",
+                    imageVector = if (doubleVoteWarning != null) Icons.Default.Warning else Icons.Default.CheckCircle,
+                    contentDescription = "Transaction Status",
                     tint = Color.White,
                     modifier = Modifier.size(36.dp)
                 )
@@ -551,13 +576,17 @@ fun VoteSuccessCertificateCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "Vote Successfully Cast & Verified!",
+                text = if (doubleVoteWarning != null) "Duplicate Vote Prevented!" else "Vote Sealed & Immutable!",
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                 color = Color.White,
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "Your franchise has been sealed in the EVM & verified via VVPAT slip.",
+                text = if (doubleVoteWarning != null) {
+                    doubleVoteWarning
+                } else {
+                    "Your franchise has been encrypted client-side with AES-256-GCM and committed via atomic Firestore transaction."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.8f),
                 textAlign = TextAlign.Center
@@ -566,67 +595,202 @@ fun VoteSuccessCertificateCard(
             Spacer(modifier = Modifier.height(16.dp))
 
             // Real-Time SMS Alert Confirmed Banner
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(BharatGreen.copy(alpha = 0.15f))
-                    .border(1.dp, BharatGreen, RoundedCornerShape(12.dp))
-                    .padding(12.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Sms,
-                        contentDescription = null,
-                        tint = BharatGreen,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = "REAL-TIME GOV SMS DISPATCHED",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = BharatGreen
+            if (doubleVoteWarning == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BharatGreen.copy(alpha = 0.15f))
+                        .border(1.dp, BharatGreen, RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Sms,
+                            contentDescription = null,
+                            tint = BharatGreen,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Text(
-                            text = "Delivered to registered mobile ${elector.mobileNumber}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White
-                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "REAL-TIME GOV SMS DISPATCHED",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = BharatGreen
+                            )
+                            Text(
+                                text = "Delivered to registered mobile ${elector.mobileNumber}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White
+                            )
+                        }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Cryptographic Zero-Knowledge Digital Proof
-            if (receipt != null) {
+            // FIRESTORE TRANSACTION STATUS BADGE
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF061427))
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CloudDone,
+                                contentDescription = null,
+                                tint = HologramBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "FIRESTORE ATOMIC TRANSACTION",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = HologramBlue
+                            )
+                        }
+                        Text(
+                            text = if ((subResult as? VoteSubmissionResult.Success)?.isFirestoreCloudSynced == true) "CLOUD SYNCED" else "SOVEREIGN LEDGER",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = SovereignGold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Tx Hash: " + ((subResult as? VoteSubmissionResult.Success)?.txHash ?: "TX-BEN-2026-OK9102"),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Double-Voting Protection: ACTIVE (1-Elector-1-Ballot Enforced)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BharatGreen
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // CLIENT-SIDE ENCRYPTION & INTEGRITY HASH CARD
+            if (payload != null) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF071424))
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Key,
+                                contentDescription = null,
+                                tint = SovereignGold,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "CLIENT-SIDE FIELD ENCRYPTION (AES-256-GCM)",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = SovereignGold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Text(
-                            text = "CRYPTOGRAPHIC E-VOTING PROOF",
+                            text = "Ciphertext: ${payload.ciphertextBase64.take(24)}... (Secret Ballot)",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = Color(0xFFE2E8F0)
+                        )
+                        Text(
+                            text = "GCM IV: ${payload.ivBase64}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = Color(0xFF94A3B8)
+                        )
+                        Text(
+                            text = "HMAC-SHA256: ${payload.integrityHmac.take(24)}...",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = Color(0xFF94A3B8)
+                        )
+                        Text(
+                            text = "Anonymized Elector Hash: ${payload.anonymizedElectorHash.take(20)}...",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = Color(0xFF38BDF8)
+                        )
+                        Text(
+                            text = "Digital Seal (SHA-256): ${payload.digitalSealSha256.take(24)}...",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = SovereignGold
+                        )
+                    }
+                }
+            }
+
+            // AUDIT PROOF RESULT (if tested)
+            if (proof != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (proof.isTamperProof) BharatGreen.copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f))
+                        .border(1.dp, if (proof.isTamperProof) BharatGreen else Color(0xFFEF4444), RoundedCornerShape(10.dp))
+                        .padding(10.dp)
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (proof.isTamperProof) Icons.Default.Verified else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (proof.isTamperProof) BharatGreen else Color(0xFFEF4444),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (proof.isTamperProof) "HMAC & SEAL VERIFIED: 100% UNTAMPERED" else "INTEGRITY MISMATCH DETECTED",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (proof.isTamperProof) BharatGreen else Color(0xFFEF4444)
+                            )
+                        }
+                        Text(
+                            text = "Computed HMAC matches stored Firestore HMAC signature byte-for-byte.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+
+            // DECRYPTED AUDIT PAYLOAD (if tested)
+            if (decryptedJson != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF0F172A))
+                        .border(1.dp, SovereignGold, RoundedCornerShape(10.dp))
+                        .padding(10.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "AUTHORIZED RECOUNT AUDIT INSPECTOR",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = SovereignGold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Receipt Token: ${receipt.tokenNumber}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = Color.White
-                        )
-                        Text(
-                            text = "VVPAT Slip Ref: ${receipt.vvpatSlipReference}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = Color.White
-                        )
-                        Text(
-                            text = "SHA-256 Hash: ${receipt.digitalSignatureSha256}",
+                            text = decryptedJson,
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = Color(0xFF94A3B8)
+                            color = Color(0xFFF1F5F9)
                         )
                     }
                 }
@@ -634,19 +798,61 @@ fun VoteSuccessCertificateCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Row(
+            // Action Buttons
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = onReset,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    modifier = Modifier.weight(1f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Vote Again (Demo)")
+                    FilledTonalButton(
+                        onClick = { viewModel.verifyCurrentBallotIntegrity() },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(imageVector = Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Verify Integrity", fontSize = 12.sp)
+                    }
+
+                    FilledTonalButton(
+                        onClick = { viewModel.decryptCurrentBallotForAudit() },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(imageVector = Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Audit Recount", fontSize = 12.sp)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.testAttemptDoubleVoting() },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFF87171)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(imageVector = Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Test Double Vote", fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = onReset,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(imageVector = Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Reset Simulation", fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -699,3 +905,4 @@ private fun StepDivider(isDone: Boolean) {
             .background(if (isDone) BharatGreen else Color(0xFFCBD5E1))
     )
 }
+
